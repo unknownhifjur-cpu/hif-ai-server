@@ -1,14 +1,13 @@
 /**
  * AI Integration Utility
  * Supports Gemini, Groq, OpenRouter, and OpenAI
- * Uses a fallback chain: tries each provider in order until one succeeds
+ * Fallback chain + Language adaptive + India time + Full SYSTEM_PROMPT
  */
 
 const https = require('https');
 
 /**
- * Base system prompt
- * Student-focused, multilingual support
+ * Full SYSTEM_PROMPT
  */
 const SYSTEM_PROMPT = `🌟 Hey there! I'm Hif AI — your personal AI tutor and study buddy! Think of me as a super-smart friend who’s always patient, never judges, and genuinely loves helping you understand things. Let’s make learning feel like an adventure, not a chore 🚀
 
@@ -27,7 +26,8 @@ const SYSTEM_PROMPT = `🌟 Hey there! I'm Hif AI — your personal AI tutor and
 - **English & Literature ✍️** – Grammar, essays, poetry analysis, explained only if requested.  
 
 ## 🗣️ Language & Communication:
-- Start in **English**, then adapt to the user’s preferred language dynamically.  
+- Start in **English**, then adapt to your preferred language dynamically.  
+- Keep answers simple, friendly, and precise.  
 
 ## 🌈 My Personality:
 - Encouraging and patient.  
@@ -56,21 +56,18 @@ Ask me anything — I’ll give **just the answer you need**, short or detailed 
 
 /**
  * Detect user language
- * Returns 'bn' for Bangla, 'en' for others
  */
 function detectLanguage(text) {
-  const banglaRegex = /[\u0980-\u09FF]/; // Bengali unicode range
-  if (banglaRegex.test(text)) return 'bn';
-  return 'en';
+  const banglaRegex = /[\u0980-\u09FF]/;
+  return banglaRegex.test(text) ? 'bn' : 'en';
 }
 
 /**
- * Special handling for date/time questions (India context)
+ * Handle special date/time questions
  */
 function handleSpecialQuestions(messages, lang) {
   const userMsg = messages[messages.length - 1].content.toLowerCase();
 
-  // Date question
   if (userMsg.includes('আজকের তারিখ') || userMsg.includes("today's date")) {
     const now = new Date();
     const indiaTime = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
@@ -79,7 +76,6 @@ function handleSpecialQuestions(messages, lang) {
       : `Today's date (India time) is ${indiaTime.getFullYear()}-${indiaTime.getMonth()+1}-${indiaTime.getDate()}`;
   }
 
-  // Current time question
   if (userMsg.includes('কত সময়') || userMsg.includes('current time')) {
     const now = new Date();
     const indiaTime = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
@@ -88,43 +84,29 @@ function handleSpecialQuestions(messages, lang) {
       : `India time now is ${indiaTime.getHours()}:${indiaTime.getMinutes()}:${indiaTime.getSeconds()}`;
   }
 
-  return null; // Other questions
+  return null;
 }
 
 /**
- * Make HTTPS POST request
+ * HTTPS POST helper
  */
 function httpsPost(hostname, path, headers, body) {
   return new Promise((resolve, reject) => {
     const data = JSON.stringify(body);
-    const options = {
-      hostname,
-      path,
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(data),
-        ...headers
-      }
-    };
-
+    const options = { hostname, path, method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data), ...headers } };
     const req = https.request(options, (res) => {
       let responseData = '';
-      res.on('data', (chunk) => { responseData += chunk; });
+      res.on('data', chunk => responseData += chunk);
       res.on('end', () => {
         try {
           const parsed = JSON.parse(responseData);
-          if (res.statusCode >= 200 && res.statusCode < 300) {
-            resolve(parsed);
-          } else {
-            reject(new Error(`HTTP ${res.statusCode}: ${JSON.stringify(parsed)}`));
-          }
+          if (res.statusCode >= 200 && res.statusCode < 300) resolve(parsed);
+          else reject(new Error(`HTTP ${res.statusCode}: ${JSON.stringify(parsed)}`));
         } catch (e) {
           reject(new Error(`Parse error: ${responseData}`));
         }
       });
     });
-
     req.on('error', reject);
     req.write(data);
     req.end();
@@ -132,118 +114,75 @@ function httpsPost(hostname, path, headers, body) {
 }
 
 /**
- * Call Gemini API
+ * Gemini API call
  */
 async function callGemini(messages, apiKey, systemPromptOverride) {
   if (!apiKey) throw new Error('No Gemini API key');
-
-  const contents = messages.map(msg => ({
-    role: msg.role === 'assistant' ? 'model' : 'user',
-    parts: [{ text: msg.content }]
-  }));
-
-  const response = await httpsPost(
-    'generativelanguage.googleapis.com',
-    `/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
-    {},
-    {
-      system_instruction: { parts: [{ text: systemPromptOverride || SYSTEM_PROMPT }] },
-      contents,
-      generationConfig: { temperature: 0.7, maxOutputTokens: 2048 }
-    }
-  );
-
+  const contents = messages.map(msg => ({ role: msg.role === 'assistant' ? 'model' : 'user', parts: [{ text: msg.content }] }));
+  const response = await httpsPost('generativelanguage.googleapis.com', `/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {}, {
+    system_instruction: { parts: [{ text: systemPromptOverride || SYSTEM_PROMPT }] },
+    contents,
+    generationConfig: { temperature: 0.7, maxOutputTokens: 2048 }
+  });
   return response.candidates[0].content.parts[0].text;
 }
 
 /**
- * Call Groq API (OpenAI-compatible)
+ * Groq API call
  */
 async function callGroq(messages, apiKey, systemPromptOverride) {
   if (!apiKey) throw new Error('No Groq API key');
-
-  const response = await httpsPost(
-    'api.groq.com',
-    '/openai/v1/chat/completions',
-    { Authorization: `Bearer ${apiKey}` },
-    {
-      model: 'llama-3.1-8b-instant',
-      messages: [
-        { role: 'system', content: systemPromptOverride || SYSTEM_PROMPT },
-        ...messages
-      ],
-      temperature: 0.7,
-      max_tokens: 2048
-    }
-  );
-
+  const response = await httpsPost('api.groq.com', '/openai/v1/chat/completions', { Authorization: `Bearer ${apiKey}` }, {
+    model: 'llama-3.1-8b-instant',
+    messages: [{ role: 'system', content: systemPromptOverride || SYSTEM_PROMPT }, ...messages],
+    temperature: 0.7,
+    max_tokens: 2048
+  });
   return response.choices[0].message.content;
 }
 
 /**
- * Call OpenRouter API
+ * OpenRouter API call
  */
 async function callOpenRouter(messages, apiKey, systemPromptOverride) {
   if (!apiKey) throw new Error('No OpenRouter API key');
-
-  const response = await httpsPost(
-    'openrouter.ai',
-    '/api/v1/chat/completions',
-    {
-      Authorization: `Bearer ${apiKey}`,
-      'HTTP-Referer': 'https://hif-ai.app',
-      'X-Title': 'Hif AI - Student Tutor'
-    },
-    {
-      model: 'meta-llama/llama-3.1-8b-instruct:free',
-      messages: [
-        { role: 'system', content: systemPromptOverride || SYSTEM_PROMPT },
-        ...messages
-      ],
-      temperature: 0.7,
-      max_tokens: 2048
-    }
-  );
-
+  const response = await httpsPost('openrouter.ai', '/api/v1/chat/completions', {
+    Authorization: `Bearer ${apiKey}`,
+    'HTTP-Referer': 'https://hif-ai.app',
+    'X-Title': 'Hif AI - Student Tutor'
+  }, {
+    model: 'meta-llama/llama-3.1-8b-instruct:free',
+    messages: [{ role: 'system', content: systemPromptOverride || SYSTEM_PROMPT }, ...messages],
+    temperature: 0.7,
+    max_tokens: 2048
+  });
   return response.choices[0].message.content;
 }
 
 /**
- * Call OpenAI API
+ * OpenAI API call
  */
 async function callOpenAI(messages, apiKey, systemPromptOverride) {
   if (!apiKey) throw new Error('No OpenAI API key');
-
-  const response = await httpsPost(
-    'api.openai.com',
-    '/v1/chat/completions',
-    { Authorization: `Bearer ${apiKey}` },
-    {
-      model: 'gpt-4o-mini',
-      messages: [
-        { role: 'system', content: systemPromptOverride || SYSTEM_PROMPT },
-        ...messages
-      ],
-      temperature: 0.7,
-      max_tokens: 2048
-    }
-  );
-
+  const response = await httpsPost('api.openai.com', '/v1/chat/completions', { Authorization: `Bearer ${apiKey}` }, {
+    model: 'gpt-4o-mini',
+    messages: [{ role: 'system', content: systemPromptOverride || SYSTEM_PROMPT }, ...messages],
+    temperature: 0.7,
+    max_tokens: 2048
+  });
   return response.choices[0].message.content;
 }
 
 /**
- * Main AI call function with fallback + language adaptive + India time
+ * Main AI call function
  */
 async function getAIResponse(messages) {
   const lang = detectLanguage(messages[messages.length - 1].content);
 
-  // Handle special date/time questions first
   const specialAnswer = handleSpecialQuestions(messages, lang);
   if (specialAnswer) return { response: specialAnswer, provider: 'SpecialHandler' };
 
-  // Adjust SYSTEM_PROMPT for language
-  const systemPromptWithLang = SYSTEM_PROMPT + (lang === 'bn' ? '\n\n💡 এখন বাংলায় উত্তর দাও।' : '\n\n💡 Answer in English.');
+  const systemPromptWithLang = SYSTEM_PROMPT + (lang === 'bn' ? '\n\n💡 এখন বাংলায় সংক্ষিপ্তভাবে উত্তর দাও।' : '\n\n💡 Answer concisely in English.');
 
   const providers = [
     { name: 'Gemini', fn: callGemini, key: process.env.GEMINI_API_KEY },
@@ -255,11 +194,7 @@ async function getAIResponse(messages) {
   const errors = [];
 
   for (const provider of providers) {
-    if (!provider.key) {
-      errors.push(`${provider.name}: No API key configured`);
-      continue;
-    }
-
+    if (!provider.key) { errors.push(`${provider.name}: No API key configured`); continue; }
     try {
       console.log(`[AI] Trying ${provider.name}...`);
       const response = await provider.fn(messages, provider.key, systemPromptWithLang);
