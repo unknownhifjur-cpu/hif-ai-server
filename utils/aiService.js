@@ -6,7 +6,10 @@
 
 const https = require('https');
 
-// Student-focused system prompt in both English and Bengali
+/**
+ * Base system prompt
+ * Student-focused, multilingual support
+ */
 const SYSTEM_PROMPT = `🌟 Hey there! I'm Hif AI — your personal AI tutor and study buddy! Think of me as a super-smart friend who’s always patient, never judges, and genuinely loves helping you understand things. Let’s make learning feel like an adventure, not a chore 🚀
 
 ## 🎯 What I’m All About:
@@ -24,8 +27,7 @@ const SYSTEM_PROMPT = `🌟 Hey there! I'm Hif AI — your personal AI tutor and
 - **English & Literature ✍️** – Grammar, essays, poetry analysis, explained only if requested.  
 
 ## 🗣️ Language & Communication:
-- Start in **English**, then adapt to your preferred language (like Bengali / বাংলা).  
-- Keep answers simple, friendly, and precise.  
+- Start in **English**, then adapt to the user’s preferred language dynamically.  
 
 ## 🌈 My Personality:
 - Encouraging and patient.  
@@ -46,14 +48,51 @@ const SYSTEM_PROMPT = `🌟 Hey there! I'm Hif AI — your personal AI tutor and
 - **Birthday:** 24th June 2008  
 - Born in **Malda district, West Bengal, India**, currently in **Class 12 (2026)**.  
 - Loves **coding** and exploring new technologies.  
-- Completed **10th (Madhyamik) at Bhagabanpur KBS High School.  
+- Completed **10th (Madhyamik) at Bhagabanpur KBS High School**.  
 - Only share these details if the user asks explicitly.
 
 ## ✨ Let’s Start!
 Ask me anything — I’ll give **just the answer you need**, short or detailed depending on the question. No extra info unless you request it.`;
 
 /**
- * Make an HTTPS POST request
+ * Detect user language
+ * Returns 'bn' for Bangla, 'en' for others
+ */
+function detectLanguage(text) {
+  const banglaRegex = /[\u0980-\u09FF]/; // Bengali unicode range
+  if (banglaRegex.test(text)) return 'bn';
+  return 'en';
+}
+
+/**
+ * Special handling for date/time questions (India context)
+ */
+function handleSpecialQuestions(messages, lang) {
+  const userMsg = messages[messages.length - 1].content.toLowerCase();
+
+  // Date question
+  if (userMsg.includes('আজকের তারিখ') || userMsg.includes("today's date")) {
+    const now = new Date();
+    const indiaTime = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
+    return lang === 'bn'
+      ? `আজকের তারিখ (ভারত সময়) হলো ${indiaTime.getFullYear()}-${indiaTime.getMonth()+1}-${indiaTime.getDate()}`
+      : `Today's date (India time) is ${indiaTime.getFullYear()}-${indiaTime.getMonth()+1}-${indiaTime.getDate()}`;
+  }
+
+  // Current time question
+  if (userMsg.includes('কত সময়') || userMsg.includes('current time')) {
+    const now = new Date();
+    const indiaTime = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
+    return lang === 'bn'
+      ? `ভারত সময় এখন ${indiaTime.getHours()}:${indiaTime.getMinutes()}:${indiaTime.getSeconds()}`
+      : `India time now is ${indiaTime.getHours()}:${indiaTime.getMinutes()}:${indiaTime.getSeconds()}`;
+  }
+
+  return null; // Other questions
+}
+
+/**
+ * Make HTTPS POST request
  */
 function httpsPost(hostname, path, headers, body) {
   return new Promise((resolve, reject) => {
@@ -93,12 +132,11 @@ function httpsPost(hostname, path, headers, body) {
 }
 
 /**
- * Call Google Gemini API
+ * Call Gemini API
  */
-async function callGemini(messages, apiKey) {
+async function callGemini(messages, apiKey, systemPromptOverride) {
   if (!apiKey) throw new Error('No Gemini API key');
 
-  // Convert messages to Gemini format
   const contents = messages.map(msg => ({
     role: msg.role === 'assistant' ? 'model' : 'user',
     parts: [{ text: msg.content }]
@@ -109,12 +147,9 @@ async function callGemini(messages, apiKey) {
     `/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
     {},
     {
-      system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
+      system_instruction: { parts: [{ text: systemPromptOverride || SYSTEM_PROMPT }] },
       contents,
-      generationConfig: {
-        temperature: 0.7,
-        maxOutputTokens: 2048
-      }
+      generationConfig: { temperature: 0.7, maxOutputTokens: 2048 }
     }
   );
 
@@ -124,7 +159,7 @@ async function callGemini(messages, apiKey) {
 /**
  * Call Groq API (OpenAI-compatible)
  */
-async function callGroq(messages, apiKey) {
+async function callGroq(messages, apiKey, systemPromptOverride) {
   if (!apiKey) throw new Error('No Groq API key');
 
   const response = await httpsPost(
@@ -134,7 +169,7 @@ async function callGroq(messages, apiKey) {
     {
       model: 'llama-3.1-8b-instant',
       messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'system', content: systemPromptOverride || SYSTEM_PROMPT },
         ...messages
       ],
       temperature: 0.7,
@@ -146,9 +181,9 @@ async function callGroq(messages, apiKey) {
 }
 
 /**
- * Call OpenRouter API (OpenAI-compatible, access to many models)
+ * Call OpenRouter API
  */
-async function callOpenRouter(messages, apiKey) {
+async function callOpenRouter(messages, apiKey, systemPromptOverride) {
   if (!apiKey) throw new Error('No OpenRouter API key');
 
   const response = await httpsPost(
@@ -160,9 +195,9 @@ async function callOpenRouter(messages, apiKey) {
       'X-Title': 'Hif AI - Student Tutor'
     },
     {
-      model: 'meta-llama/llama-3.1-8b-instruct:free', // Free model on OpenRouter
+      model: 'meta-llama/llama-3.1-8b-instruct:free',
       messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'system', content: systemPromptOverride || SYSTEM_PROMPT },
         ...messages
       ],
       temperature: 0.7,
@@ -176,7 +211,7 @@ async function callOpenRouter(messages, apiKey) {
 /**
  * Call OpenAI API
  */
-async function callOpenAI(messages, apiKey) {
+async function callOpenAI(messages, apiKey, systemPromptOverride) {
   if (!apiKey) throw new Error('No OpenAI API key');
 
   const response = await httpsPost(
@@ -186,7 +221,7 @@ async function callOpenAI(messages, apiKey) {
     {
       model: 'gpt-4o-mini',
       messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'system', content: systemPromptOverride || SYSTEM_PROMPT },
         ...messages
       ],
       temperature: 0.7,
@@ -198,11 +233,18 @@ async function callOpenAI(messages, apiKey) {
 }
 
 /**
- * Main AI call function with fallback chain
- * Order: Gemini → Groq → OpenRouter → OpenAI
- * Falls back to next provider if one fails
+ * Main AI call function with fallback + language adaptive + India time
  */
 async function getAIResponse(messages) {
+  const lang = detectLanguage(messages[messages.length - 1].content);
+
+  // Handle special date/time questions first
+  const specialAnswer = handleSpecialQuestions(messages, lang);
+  if (specialAnswer) return { response: specialAnswer, provider: 'SpecialHandler' };
+
+  // Adjust SYSTEM_PROMPT for language
+  const systemPromptWithLang = SYSTEM_PROMPT + (lang === 'bn' ? '\n\n💡 এখন বাংলায় উত্তর দাও।' : '\n\n💡 Answer in English.');
+
   const providers = [
     { name: 'Gemini', fn: callGemini, key: process.env.GEMINI_API_KEY },
     { name: 'Groq', fn: callGroq, key: process.env.GROQ_API_KEY },
@@ -220,7 +262,7 @@ async function getAIResponse(messages) {
 
     try {
       console.log(`[AI] Trying ${provider.name}...`);
-      const response = await provider.fn(messages, provider.key);
+      const response = await provider.fn(messages, provider.key, systemPromptWithLang);
       console.log(`[AI] Success with ${provider.name}`);
       return { response, provider: provider.name };
     } catch (error) {
@@ -229,7 +271,6 @@ async function getAIResponse(messages) {
     }
   }
 
-  // All providers failed
   throw new Error(`All AI providers failed:\n${errors.join('\n')}`);
 }
 
