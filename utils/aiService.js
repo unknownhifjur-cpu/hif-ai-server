@@ -67,21 +67,21 @@ function detectLanguage(text) {
  */
 function handleSpecialQuestions(messages, lang) {
   const userMsg = messages[messages.length - 1].content.toLowerCase();
+  const now = new Date();
+  const indiaTime = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
+
+  const pad = (n) => String(n).padStart(2, '0');
 
   if (userMsg.includes('আজকের তারিখ') || userMsg.includes("today's date")) {
-    const now = new Date();
-    const indiaTime = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
     return lang === 'bn'
-      ? `আজকের তারিখ (ভারত সময়) হলো ${indiaTime.getFullYear()}-${indiaTime.getMonth()+1}-${indiaTime.getDate()}`
-      : `Today's date (India time) is ${indiaTime.getFullYear()}-${indiaTime.getMonth()+1}-${indiaTime.getDate()}`;
+      ? `আজকের তারিখ (ভারত সময়) হলো ${indiaTime.getFullYear()}-${pad(indiaTime.getMonth()+1)}-${pad(indiaTime.getDate())}`
+      : `Today's date (India time) is ${indiaTime.getFullYear()}-${pad(indiaTime.getMonth()+1)}-${pad(indiaTime.getDate())}`;
   }
 
   if (userMsg.includes('কত সময়') || userMsg.includes('current time')) {
-    const now = new Date();
-    const indiaTime = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
     return lang === 'bn'
-      ? `ভারত সময় এখন ${indiaTime.getHours()}:${indiaTime.getMinutes()}:${indiaTime.getSeconds()}`
-      : `India time now is ${indiaTime.getHours()}:${indiaTime.getMinutes()}:${indiaTime.getSeconds()}`;
+      ? `ভারত সময় এখন ${pad(indiaTime.getHours())}:${pad(indiaTime.getMinutes())}:${pad(indiaTime.getSeconds())}`
+      : `India time now is ${pad(indiaTime.getHours())}:${pad(indiaTime.getMinutes())}:${pad(indiaTime.getSeconds())}`;
   }
 
   return null;
@@ -114,22 +114,30 @@ function httpsPost(hostname, path, headers, body) {
 }
 
 /**
- * Gemini API call
+ * API calls
  */
 async function callGemini(messages, apiKey, systemPromptOverride) {
   if (!apiKey) throw new Error('No Gemini API key');
-  const contents = messages.map(msg => ({ role: msg.role === 'assistant' ? 'model' : 'user', parts: [{ text: msg.content }] }));
-  const response = await httpsPost('generativelanguage.googleapis.com', `/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {}, {
-    system_instruction: { parts: [{ text: systemPromptOverride || SYSTEM_PROMPT }] },
-    contents,
-    generationConfig: { temperature: 0.7, maxOutputTokens: 2048 }
-  });
+
+  const contents = messages.map(msg => ({
+    role: msg.role === 'assistant' ? 'model' : 'user',
+    parts: [{ text: msg.content }]
+  }));
+
+  const response = await httpsPost(
+    'generativelanguage.googleapis.com',
+    `/v1/models/gemini-1.5-pro:generateContent?key=${apiKey}`,
+    {},
+    {
+      system_instruction: { parts: [{ text: systemPromptOverride || SYSTEM_PROMPT }] },
+      contents,
+      generationConfig: { temperature: 0.7, maxOutputTokens: 2048 }
+    }
+  );
+
   return response.candidates[0].content.parts[0].text;
 }
 
-/**
- * Groq API call
- */
 async function callGroq(messages, apiKey, systemPromptOverride) {
   if (!apiKey) throw new Error('No Groq API key');
   const response = await httpsPost('api.groq.com', '/openai/v1/chat/completions', { Authorization: `Bearer ${apiKey}` }, {
@@ -141,9 +149,6 @@ async function callGroq(messages, apiKey, systemPromptOverride) {
   return response.choices[0].message.content;
 }
 
-/**
- * OpenRouter API call
- */
 async function callOpenRouter(messages, apiKey, systemPromptOverride) {
   if (!apiKey) throw new Error('No OpenRouter API key');
   const response = await httpsPost('openrouter.ai', '/api/v1/chat/completions', {
@@ -159,9 +164,6 @@ async function callOpenRouter(messages, apiKey, systemPromptOverride) {
   return response.choices[0].message.content;
 }
 
-/**
- * OpenAI API call
- */
 async function callOpenAI(messages, apiKey, systemPromptOverride) {
   if (!apiKey) throw new Error('No OpenAI API key');
   const response = await httpsPost('api.openai.com', '/v1/chat/completions', { Authorization: `Bearer ${apiKey}` }, {
